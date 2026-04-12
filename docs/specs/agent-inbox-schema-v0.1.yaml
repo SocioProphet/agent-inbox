@@ -1,0 +1,348 @@
+version: agent-inbox-schema-v0.1
+status: draft
+purpose: >-
+  Governed request and email intake schema for SocioProphet/agent-inbox,
+  combining the existing LangGraph human-interrupt inbox UI with a richer
+  evidence, policy, and action-bundle model for email and request operations.
+
+existing_repo_alignment:
+  repository: SocioProphet/agent-inbox
+  existing_types:
+    - src/components/agent-inbox/types.ts::HumanInterrupt
+    - src/components/agent-inbox/types.ts::HumanResponse
+    - src/components/agent-inbox/types.ts::ThreadData
+    - src/components/agent-inbox/types.ts::Email
+  intent: >-
+    Preserve the current interrupt-centric UI contract while widening the data
+    model so inbox items can originate from email, artifact submissions,
+    governed requests, and future platform actions.
+
+canonical_objects:
+  RawMessage:
+    purpose: immutable evidence
+    immutable: true
+    fields:
+      provider_message_id: string
+      provider_thread_id: string|null
+      mailbox_id: string
+      received_at: datetime
+      envelope_headers: object
+      raw_rfc822_ref: blob_ref
+      raw_attachment_blob_refs:
+        type: array
+        items: blob_ref
+      ingress_meta:
+        provider: imap|jmap|gmail|graph|other
+        fetch_uid: string|null
+        mailbox_path: string|null
+        transport_trace: object|null
+
+  NormalizedMessage:
+    purpose: deterministic parsed communication
+    fields:
+      subject: string
+      participants:
+        from: Address[]
+        to: Address[]
+        cc: Address[]
+        bcc: Address[]
+        reply_to: Address[]
+      clean_text: string
+      raw_html_ref: blob_ref|null
+      quoted_history: QuotedSegment[]
+      signature_block: SignatureBlock|null
+      attachment_inventory: AttachmentMeta[]
+      threading_features:
+        message_id: string|null
+        in_reply_to: string[]
+        references: string[]
+      language: string|null
+      parser_meta:
+        parser: string
+        parser_version: string
+        parse_warnings: string[]
+
+  RequestFrame:
+    purpose: typed request interpretation
+    fields:
+      intents: IntentHypothesis[]
+      primary_intent: string
+      entities: Entity[]
+      relations: Relation[]
+      subrequests: Subrequest[]
+      missing_fields: MissingField[]
+      completeness_state: >-
+        syntactically_incomplete|semantically_incomplete|contextually_incomplete|
+        execution_incomplete|complete_for_reply|complete_for_task|
+        complete_for_execution
+      risk_flags: string[]
+      suspicion_flags: string[]
+      confidence:
+        intent: float
+        extraction: float
+        completeness: float
+
+  ResolutionFrame:
+    purpose: bind request to real-world state
+    fields:
+      sender_identity: IdentityRef|null
+      sender_org: OrgRef|null
+      subject_identities: IdentityRef[]
+      resource_refs: ResourceRef[]
+      project_refs: ProjectRef[]
+      document_refs: DocumentRef[]
+      calendar_refs: CalendarRef[]
+      prior_thread_refs: ThreadRef[]
+      authority_assessment:
+        requester_authority: confirmed|probable|weak|none|unknown
+        basis: string[]
+        conflicts: string[]
+
+  DecisionFrame:
+    purpose: policy evaluation result
+    fields:
+      policy_class: P0|P1|P2|P3|P4|P5
+      allowed_actions: ActionKind[]
+      blocked_actions: BlockedAction[]
+      required_approvals: ApprovalRequirement[]
+      escalation_targets: QueueRef[]
+      rationale: Reason[]
+      decision_confidence: float
+
+  ActionBundle:
+    purpose: proposed and optionally executable actions
+    fields:
+      reply_draft: ReplyDraft|null
+      task_proposals: TaskProposal[]
+      calendar_proposals: CalendarProposal[]
+      external_mutation_candidates: MutationProposal[]
+      escalation_events: EscalationEvent[]
+      auto_executable: boolean
+      dry_run_required: boolean
+
+  ExecutionReceipt:
+    purpose: side-effect record
+    fields:
+      action_id: string
+      actor: human|agent|system
+      executed_at: datetime
+      target_system: string
+      side_effects: object[]
+      rollback_handle: string|null
+      postconditions: CheckResult[]
+
+  Cairn:
+    purpose: replay and audit checkpoint
+    fields:
+      cairn_id: string
+      input_hashes: object
+      model_versions: object
+      ruleset_versions: object
+      evidence_refs: string[]
+      transition_log: Transition[]
+
+intent_registry_v0:
+  - support_request
+  - task_update
+  - document_review_request
+  - meeting_request
+  - access_request
+  - approval_request
+  - security_report
+  - vendor_intake
+  - billing_issue
+  - partnership_inquiry
+  - artifact_submission
+  - unknown_needs_triage
+
+relation_vocabulary_v0:
+  - requester_to_subject
+  - requester_to_resource
+  - subject_to_resource
+  - reporter_to_issue
+  - issue_to_asset
+  - organizer_to_participant
+  - participant_to_topic
+  - reviewer_to_document
+  - submitter_to_artifact
+  - request_to_deadline
+  - request_to_justification
+  - request_to_supporting_evidence
+
+confidence_policy_v0:
+  intent_accept_threshold: 0.78
+  extraction_accept_threshold: 0.74
+  relation_accept_threshold: 0.70
+  resolution_accept_threshold: 0.80
+  auto_action_minimums:
+    intent: 0.90
+    extraction: 0.90
+    resolution: 0.90
+    policy_no_conflicts: true
+
+policy_classes_v0:
+  P0: observe_only
+  P1: acknowledge_receipt_only
+  P2: draft_reply_and_or_create_internal_task
+  P3: create_internal_objects_with_owner_approval
+  P4: external_facing_mutation_with_explicit_approval
+  P5: privileged_financial_legal_or_destructive_mutation_with_dual_approval_and_hold
+
+intent_schemas_v0:
+  access_request:
+    required_slots:
+      - requested_subject
+      - requested_resources
+      - requested_access_level
+      - business_justification
+    required_relations:
+      - requester_to_subject
+      - subject_to_resource
+    validators:
+      - sender_authority
+      - subject_identity_resolution
+      - resource_existence
+    optional_slots:
+      - effective_date
+      - expiration_date
+      - supporting_documents
+    allowed_auto_actions:
+      - acknowledge_receipt
+      - create_review_task
+    forbidden_auto_actions:
+      - grant_privileged_access
+      - revoke_access
+    default_policy_class: P4
+
+  meeting_request:
+    required_slots:
+      - participants
+      - requested_topic
+      - time_constraint
+    required_relations:
+      - organizer_to_participant
+      - participant_to_topic
+    validators:
+      - participant_resolution
+      - organizer_identity_resolution
+    optional_slots:
+      - location_preference
+      - duration
+      - required_materials
+    allowed_auto_actions:
+      - acknowledge_receipt
+      - propose_times
+    forbidden_auto_actions:
+      - hard_book_external_without_policy
+    default_policy_class: P3
+
+  security_report:
+    required_slots:
+      - observed_issue
+      - affected_asset
+      - time_window
+    required_relations:
+      - reporter_to_issue
+      - issue_to_asset
+    validators:
+      - asset_resolution
+      - spoof_and_phishing_check
+    optional_slots:
+      - indicators
+      - logs
+      - attachment_evidence
+    allowed_auto_actions:
+      - acknowledge_receipt
+      - create_incident_task
+      - escalate_to_security_queue
+    forbidden_auto_actions:
+      - auto_close_incident
+      - auto_remediate_without_guardrail
+    default_policy_class: P4
+
+  document_review_request:
+    required_slots:
+      - document_ref
+      - requested_review_type
+    required_relations:
+      - reviewer_to_document
+    validators:
+      - document_accessible
+      - requester_identity_resolution
+    optional_slots:
+      - deadline
+      - review_scope
+      - output_format
+    allowed_auto_actions:
+      - acknowledge_receipt
+      - create_review_task
+    forbidden_auto_actions:
+      - approve_binding_document
+    default_policy_class: P2
+
+  billing_issue:
+    required_slots:
+      - billing_subject
+      - issue_summary
+    validators:
+      - account_resolution
+    optional_slots:
+      - invoice_id
+      - disputed_amount
+      - time_window
+    allowed_auto_actions:
+      - acknowledge_receipt
+      - create_finance_task
+    forbidden_auto_actions:
+      - issue_refund
+      - change_payment_method
+    default_policy_class: P4
+
+  artifact_submission:
+    required_slots:
+      - artifact_ref
+    validators:
+      - artifact_parseability
+      - content_policy_check
+    optional_slots:
+      - project_ref
+      - expected_action
+      - deadline
+    allowed_auto_actions:
+      - acknowledge_receipt
+      - ingest_artifact
+      - create_followup_task
+    forbidden_auto_actions:
+      - publish_externally
+    default_policy_class: P2
+
+ui_mapping:
+  HumanInterrupt:
+    source: existing repo type
+    extension: >-
+      Render ActionBundle items as human interrupts when an approval or response
+      is needed.
+  HumanResponse:
+    source: existing repo type
+    extension: >-
+      Continue to carry accept, ignore, response, and edit, but bind them to
+      proposed actions and policy outcomes rather than only LangGraph tool args.
+  ThreadData:
+    source: existing repo type
+    extension: >-
+      Add governed request metadata, evidence refs, policy class, and action
+      bundle references to thread-associated values.
+  Email:
+    source: existing repo type
+    extension: >-
+      Replace the current thin email shape with RawMessage + NormalizedMessage +
+      RequestFrame layering while preserving backwards-compatible display fields.
+
+notes:
+  - >-
+    This schema is intentionally additive relative to the existing UI. It does
+    not require deleting HumanInterrupt/HumanResponse; it requires upstream
+    producers that can generate those objects from governed request decisions.
+  - >-
+    Existing LangGraph interrupt flows remain valid, but email/request intake can
+    now be normalized into the same review surface.
