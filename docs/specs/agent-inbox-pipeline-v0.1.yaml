@@ -1,0 +1,183 @@
+version: agent-inbox-pipeline-v0.1
+status: draft
+purpose: Governed intake and action pipeline for SocioProphet/agent-inbox.
+
+alignment:
+  existing_repo:
+    landing_page: src/app/page.tsx
+    inbox_component: src/components/agent-inbox/index.tsx
+    thread_context: src/components/agent-inbox/contexts/ThreadContext.tsx
+    interrupt_utils: src/components/agent-inbox/contexts/utils.ts
+  role: >-
+    Keep the current repo as the human review surface. Add a governed upstream
+    pipeline that produces richer threads, interrupts, policy metadata, and
+    action bundles.
+
+ingress_adapter_v0:
+  input:
+    mailbox_id: string
+    provider: imap|jmap|gmail|graph|other
+    cursor: string|null
+  output:
+    messages:
+      - provider_message_id
+      - provider_thread_id
+      - raw_rfc822_ref
+      - received_at
+    next_cursor: string|null
+  invariants:
+    - raw_message_before_parse
+    - no_heavy_processing_in_mailbox_lock
+    - idempotent_retries
+
+parse_stage_v0:
+  parser: postal-mime
+  input: raw_rfc822_ref
+  output: normalized_message_ref
+  emits:
+    - inbox.message.parsed
+    - inbox.message.parse_failed
+
+attachment_partition_stage_v0:
+  implementation: unstructured
+  input:
+    - attachment_inventory
+    - policy_context
+  output: partitioned_elements
+  emits:
+    - inbox.attachment.partitioned
+    - inbox.attachment.skipped
+    - inbox.attachment.failed
+
+interpretation_stage_v0:
+  implementation:
+    - deterministic_rules_prepass
+    - intent_router
+    - gliner_entity_relation_pass
+    - schema_validation
+  input:
+    - normalized_message_ref
+    - partitioned_elements
+    - schema_registry_ref
+  output: request_frame_ref
+  emits:
+    - inbox.request.interpreted
+
+resolution_stage_v0:
+  input:
+    - request_frame_ref
+    - identity_graph
+    - resource_registry
+    - project_graph
+    - prior_thread_store
+  output: resolution_frame_ref
+  invariants:
+    - explicit_identity_confidence
+    - authority_separate_from_identity
+    - unresolved_refs_remain_explicit
+  emits:
+    - inbox.request.resolved
+
+policy_stage_v0:
+  input:
+    - request_frame_ref
+    - resolution_frame_ref
+    - policy_registry_ref
+  output: decision_frame_ref
+  checks:
+    - spoof_or_suspicion_flags
+    - required_slots_and_relations
+    - authority_sufficiency
+    - resource_existence
+    - action_allowed_for_intent
+    - approval_requirements
+  emits:
+    - inbox.policy.evaluated
+
+planning_stage_v0:
+  input:
+    - request_frame_ref
+    - resolution_frame_ref
+    - decision_frame_ref
+  output: action_bundle_ref
+  rules:
+    - prefer_structured_actions
+    - reply_explains_missing_or_blocked_conditions
+    - create_internal_tasks_when_execution_deferred
+  emits:
+    - inbox.proposal.generated
+
+execution_stage_v0:
+  input:
+    - action_bundle_ref
+    - approval_tokens
+  output: execution_receipts
+  invariants:
+    - no_side_effects_on_get_routes
+    - record_actor_target_and_side_effects
+    - auto_execute_only_when_explicitly_allowed
+  emits:
+    - inbox.action.executed
+    - inbox.action.failed
+
+state_machine_v0:
+  states:
+    - received
+    - parsed
+    - normalized
+    - quarantined_suspect
+    - interpreted
+    - awaiting_missing_fields
+    - resolved
+    - blocked_policy
+    - proposal_generated
+    - awaiting_review
+    - ready_for_auto_action
+    - executed
+    - replied
+    - escalated
+    - closed
+
+event_canon_v0:
+  - inbox.message.received
+  - inbox.message.parsed
+  - inbox.request.interpreted
+  - inbox.request.resolved
+  - inbox.policy.evaluated
+  - inbox.proposal.generated
+  - inbox.action.executed
+
+auto_action_gate_v0:
+  required:
+    parser_success: true
+    no_suspicion_flags: true
+    primary_intent_confidence_gte: 0.90
+    extraction_confidence_gte: 0.90
+    resolution_confidence_gte: 0.90
+    required_slots_present: true
+    required_relations_present: true
+    policy_class_in:
+      - P1
+      - P2
+      - P3
+    action_kind_explicitly_allowed: true
+    approvals_satisfied: true
+
+ui_integration_mapping:
+  types_ts: >-
+    Extend Email and ThreadValues gradually with governed refs and policy
+    metadata; do not break HumanInterrupt or HumanResponse.
+  thread_context: >-
+    Keep ThreadContext as the fetch and action orchestration layer, but let it
+    consume richer thread values and decision metadata.
+  interrupt_utils: >-
+    Add an adapter that maps ActionBundle review steps into HumanInterrupt
+    objects for the current UI.
+
+implementation_sequence_v0:
+  - add_schema_and_pipeline_specs
+  - extend_types_ts_with_governed_refs
+  - add_requestframe_to_humaninterrupt_adapter
+  - enrich_thread_values_with_evidence_and_policy
+  - wire_reply_and_internal_task_actuators_first
+  - defer_privileged_external_mutations_until_policy_hardening
