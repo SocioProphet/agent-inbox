@@ -1,5 +1,5 @@
 import React from 'react';
-import { GovernedThreadMetadata } from '../../governed-types';
+import { GovernedThreadMetadata } from '../governed-types';
 
 interface GovernedSummaryCardProps {
   governed?: GovernedThreadMetadata;

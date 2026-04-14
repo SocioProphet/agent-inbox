@@ -14,7 +14,9 @@ function isObjectLike(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null;
 }
 
-function maybeGovernedMetadata(value: unknown): GovernedThreadMetadata | undefined {
+function maybeGovernedMetadata(
+  value: unknown
+): GovernedThreadMetadata | undefined {
   if (!isObjectLike(value)) {
     return undefined;
   }
@@ -81,9 +83,14 @@ export function attachGovernedToThreadData<
     return threadData as GovernedThreadData<T>;
   }
 
+  const mergedInterrupts = mergeGovernedInterrupts(threadData.interrupts, governed);
+  const shouldPromoteToInterrupted =
+    threadData.status !== "interrupted" && !!mergedInterrupts?.length;
+
   return {
     ...threadData,
+    status: shouldPromoteToInterrupted ? "interrupted" : threadData.status,
     governed,
-    interrupts: mergeGovernedInterrupts(threadData.interrupts, governed),
+    interrupts: mergedInterrupts,
   } as GovernedThreadData<T>;
 }
