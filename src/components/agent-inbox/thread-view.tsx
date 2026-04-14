@@ -1,7 +1,11 @@
 import { StateView } from "./components/state-view";
 import { ThreadActionsView } from "./components/thread-actions-view";
+import { GovernedReviewPanel } from "./components/governed-review-panel";
 import { useThreadsContext } from "./contexts/ThreadContext";
-import { ThreadData } from "./types";
+import {
+  GovernedThreadData,
+  attachGovernedToThreadData,
+} from "./contexts/governed-thread";
 import React from "react";
 import { cn } from "@/lib/utils";
 import { useQueryParams } from "./hooks/use-query-params";
@@ -14,17 +18,13 @@ export function ThreadView<
   const { updateQueryParams } = useQueryParams();
   const { threadData: threads, loading } = useThreadsContext<ThreadValues>();
   const [threadData, setThreadData] =
-    React.useState<ThreadData<ThreadValues>>();
+    React.useState<GovernedThreadData<ThreadValues>>();
   const [showDescription, setShowDescription] = React.useState(true);
   const [showState, setShowState] = React.useState(false);
 
-  // Create interrupt actions if we have an interrupted thread
   const isInterrupted = threadData?.status === "interrupted";
-
-  // Show side panel for all thread types
   const showSidePanel = showDescription || showState;
 
-  // Derive thread title
   const threadTitle = React.useMemo(() => {
     if (
       threadData?.interrupts?.[0]?.action_request?.action &&
@@ -35,7 +35,6 @@ export function ThreadView<
     return `Thread: ${threadData?.thread.thread_id.slice(0, 6)}...`;
   }, [threadData]);
 
-  // Scroll to top when thread view is mounted
   React.useEffect(() => {
     if (typeof window !== "undefined") {
       window.scrollTo(0, 0);
@@ -50,11 +49,14 @@ export function ThreadView<
         (t) => t.thread.thread_id === threadId
       );
       if (selectedThread) {
-        setThreadData(selectedThread);
-        // Default to description first, state if no description
+        const selectedGovernedThread = attachGovernedToThreadData(
+          selectedThread,
+          selectedThread
+        );
+        setThreadData(selectedGovernedThread);
         if (
-          selectedThread.status === "interrupted" &&
-          selectedThread.interrupts?.[0]?.description
+          selectedGovernedThread.status === "interrupted" &&
+          selectedGovernedThread.interrupts?.[0]?.description
         ) {
           setShowDescription(true);
           setShowState(false);
@@ -63,7 +65,6 @@ export function ThreadView<
           setShowDescription(false);
         }
       } else {
-        // Route the user back to the inbox view.
         updateQueryParams(VIEW_STATE_THREAD_QUERY_PARAM);
       }
     } catch (e) {
@@ -119,11 +120,14 @@ export function ThreadView<
           "overflow-y-auto lg:max-w-1/2 w-full"
         )}
       >
-        <StateView
-          handleShowSidePanel={handleShowSidePanel}
-          threadData={threadData}
-          view={showState ? "state" : "description"}
-        />
+        <div className="flex flex-col gap-4 w-full">
+          <StateView
+            handleShowSidePanel={handleShowSidePanel}
+            threadData={threadData}
+            view={showState ? "state" : "description"}
+          />
+          <GovernedReviewPanel governed={threadData.governed} />
+        </div>
       </div>
     </div>
   );
