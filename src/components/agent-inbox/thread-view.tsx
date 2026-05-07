@@ -2,10 +2,7 @@ import { StateView } from "./components/state-view";
 import { ThreadActionsView } from "./components/thread-actions-view";
 import { GovernedReviewPanel } from "./components/governed-review-panel";
 import { useThreadsContext } from "./contexts/ThreadContext";
-import {
-  GovernedThreadData,
-  attachGovernedToThreadData,
-} from "./contexts/governed-thread";
+import { GovernedThreadData } from "./contexts/governed-thread";
 import React from "react";
 import { cn } from "@/lib/utils";
 import { useQueryParams } from "./hooks/use-query-params";
@@ -49,10 +46,8 @@ export function ThreadView<
         (t) => t.thread.thread_id === threadId
       );
       if (selectedThread) {
-        const selectedGovernedThread = attachGovernedToThreadData(
-          selectedThread,
-          selectedThread
-        );
+        const selectedGovernedThread =
+          selectedThread as GovernedThreadData<ThreadValues>;
         setThreadData(selectedGovernedThread);
         if (
           selectedGovernedThread.status === "interrupted" &&

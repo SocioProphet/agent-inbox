@@ -25,6 +25,10 @@ import {
   processInterruptedThread,
   processThreadWithoutInterrupts,
 } from "./utils";
+import {
+  GovernedThreadData,
+  attachGovernedToThreadData,
+} from "./governed-thread";
 import { useLocalStorage } from "../hooks/use-local-storage";
 import { useInboxes } from "../hooks/use-inboxes";
 import { logger } from "../utils/logger";
@@ -33,7 +37,7 @@ type ThreadContentType<
   ThreadValues extends Record<string, any> = Record<string, any>,
 > = {
   loading: boolean;
-  threadData: ThreadData<ThreadValues>[];
+  threadData: GovernedThreadData<ThreadValues>[];
   hasMoreThreads: boolean;
   agentInboxes: AgentInbox[];
   deleteAgentInbox: (id: string) => void;
@@ -59,7 +63,7 @@ type ThreadContentType<
     : Promise<Run> | undefined;
   fetchSingleThread: (
     threadId: string
-  ) => Promise<ThreadData<ThreadValues> | undefined>;
+  ) => Promise<GovernedThreadData<ThreadValues> | undefined>;
 };
 
 const ThreadsContext = React.createContext<ThreadContentType | undefined>(
@@ -96,8 +100,6 @@ const getClient = ({ agentInboxes, getItem, toast }: GetClientArgs) => {
 
   const langchainApiKeyLS =
     getItem(LANGCHAIN_API_KEY_LOCAL_STORAGE_KEY) || undefined;
-  // Only show this error if the deployment URL is for a deployed LangGraph instance.
-  // Local graphs do NOT require an API key.
   if (!langchainApiKeyLS && deploymentUrl.includes("us.langgraph.app")) {
     toast({
       title: "Error",
@@ -120,7 +122,7 @@ export function ThreadsProvider<
   const { getSearchParam, searchParams } = useQueryParams();
   const [loading, setLoading] = React.useState(false);
   const [threadData, setThreadData] = React.useState<
-    ThreadData<ThreadValues>[]
+    GovernedThreadData<ThreadValues>[]
   >([]);
   const [hasMoreThreads, setHasMoreThreads] = React.useState(true);
 
@@ -191,7 +193,6 @@ export function ThreadsProvider<
           return;
         }
 
-        // Handle inbox filtering differently based on type
         let statusInput: { status?: ThreadStatus } = {};
         if (inbox !== "all" && inbox !== "human_response_needed") {
           statusInput = { status: inbox as ThreadStatus };
@@ -207,85 +208,97 @@ export function ThreadsProvider<
         };
 
         const threads = await client.threads.search(threadSearchArgs);
-        const processedData: ThreadData<ThreadValues>[] = [];
+        const processedData: GovernedThreadData<ThreadValues>[] = [];
 
-        // Process threads in batches with Promise.all for better performance
+        const finalizeThreadData = (
+          data: ThreadData<ThreadValues>,
+          source?: unknown
+        ): GovernedThreadData<ThreadValues> => {
+          return attachGovernedToThreadData(data, source ?? data);
+        };
+
         const processPromises = threads.map(
-          async (thread): Promise<ThreadData<ThreadValues>> => {
+          async (thread): Promise<GovernedThreadData<ThreadValues>> => {
             const currentThread = thread as Thread<ThreadValues>;
 
-            // Handle special cases for human_response_needed inbox
             if (
               inbox === "human_response_needed" &&
               currentThread.status !== "interrupted"
             ) {
-              return {
-                status: "human_response_needed" as const,
-                thread: currentThread,
-                interrupts: undefined,
-                invalidSchema: undefined,
-              };
+              return finalizeThreadData(
+                {
+                  status: "human_response_needed" as const,
+                  thread: currentThread,
+                  interrupts: undefined,
+                  invalidSchema: undefined,
+                },
+                currentThread
+              );
             }
 
             if (currentThread.status === "interrupted") {
-              // Try the faster processing method first
               const processedThreadData =
                 processInterruptedThread(currentThread);
               if (
                 processedThreadData &&
                 processedThreadData.interrupts?.length
               ) {
-                return processedThreadData as ThreadData<ThreadValues>;
+                return finalizeThreadData(processedThreadData, currentThread);
               }
 
-              // Only if necessary, do the more expensive thread state fetch
               try {
-                // Attempt to get interrupts from state only if necessary
                 const threadInterrupts = getInterruptFromThread(currentThread);
                 if (!threadInterrupts || threadInterrupts.length === 0) {
                   const state = await client.threads.getState<ThreadValues>(
                     currentThread.thread_id
                   );
 
-                  return processThreadWithoutInterrupts(currentThread, {
+                  const recovered = processThreadWithoutInterrupts(currentThread, {
                     thread_id: currentThread.thread_id,
                     thread_state: state,
                   }) as ThreadData<ThreadValues>;
+
+                  return finalizeThreadData(recovered, state);
                 }
 
-                // Return with the interrupts we found
-                return {
-                  status: "interrupted" as const,
-                  thread: currentThread,
-                  interrupts: threadInterrupts,
-                  invalidSchema: threadInterrupts.some(
-                    (interrupt) =>
-                      interrupt?.action_request?.action === IMPROPER_SCHEMA ||
-                      !interrupt?.action_request?.action
-                  ),
-                };
+                return finalizeThreadData(
+                  {
+                    status: "interrupted" as const,
+                    thread: currentThread,
+                    interrupts: threadInterrupts,
+                    invalidSchema: threadInterrupts.some(
+                      (interrupt) =>
+                        interrupt?.action_request?.action === IMPROPER_SCHEMA ||
+                        !interrupt?.action_request?.action
+                    ),
+                  },
+                  currentThread
+                );
               } catch (_e) {
-                // If all else fails, mark as invalid schema
-                return {
-                  status: "interrupted" as const,
-                  thread: currentThread,
-                  interrupts: undefined,
-                  invalidSchema: true,
-                };
+                return finalizeThreadData(
+                  {
+                    status: "interrupted" as const,
+                    thread: currentThread,
+                    interrupts: undefined,
+                    invalidSchema: true,
+                  },
+                  currentThread
+                );
               }
-            } else {
-              // Non-interrupted threads are simple
-              return {
+            }
+
+            return finalizeThreadData(
+              {
                 status: currentThread.status,
                 thread: currentThread,
                 interrupts: undefined,
                 invalidSchema: undefined,
-              } as ThreadData<ThreadValues>;
-            }
+              } as ThreadData<ThreadValues>,
+              currentThread
+            );
           }
         );
 
-        // Process all threads concurrently
         const results = await Promise.all(processPromises);
         processedData.push(...results);
 
@@ -307,7 +320,9 @@ export function ThreadsProvider<
   );
 
   const fetchSingleThread = React.useCallback(
-    async (threadId: string): Promise<ThreadData<ThreadValues> | undefined> => {
+    async (
+      threadId: string
+    ): Promise<GovernedThreadData<ThreadValues> | undefined> => {
       const client = getClient({
         agentInboxes,
         getItem,
@@ -318,6 +333,13 @@ export function ThreadsProvider<
       }
       const thread = await client.threads.get(threadId);
       const currentThread = thread as Thread<ThreadValues>;
+
+      const finalizeThreadData = (
+        data: ThreadData<ThreadValues>,
+        source?: unknown
+      ): GovernedThreadData<ThreadValues> => {
+        return attachGovernedToThreadData(data, source ?? data);
+      };
 
       if (thread.status === "interrupted") {
         const threadInterrupts = getInterruptFromThread(currentThread);
@@ -333,46 +355,55 @@ export function ThreadsProvider<
           );
 
           if (processedThread) {
-            return processedThread as ThreadData<ThreadValues>;
+            return finalizeThreadData(
+              processedThread as ThreadData<ThreadValues>,
+              state
+            );
           }
         }
 
-        // Return interrupted thread data
-        return {
-          thread: currentThread,
-          status: "interrupted",
-          interrupts: threadInterrupts,
-          invalidSchema:
-            !threadInterrupts ||
-            threadInterrupts.length === 0 ||
-            threadInterrupts.some(
-              (interrupt) =>
-                interrupt?.action_request?.action === IMPROPER_SCHEMA ||
-                !interrupt?.action_request?.action
-            ),
-        };
+        return finalizeThreadData(
+          {
+            thread: currentThread,
+            status: "interrupted",
+            interrupts: threadInterrupts,
+            invalidSchema:
+              !threadInterrupts ||
+              threadInterrupts.length === 0 ||
+              threadInterrupts.some(
+                (interrupt) =>
+                  interrupt?.action_request?.action === IMPROPER_SCHEMA ||
+                  !interrupt?.action_request?.action
+              ),
+          },
+          currentThread
+        );
       }
 
-      // Check for special human_response_needed status
       const inbox = getSearchParam(INBOX_PARAM) as ThreadStatusWithAll;
       if (inbox === "human_response_needed") {
-        return {
-          thread: currentThread,
-          status: "human_response_needed",
-          interrupts: undefined,
-          invalidSchema: undefined,
-        };
+        return finalizeThreadData(
+          {
+            thread: currentThread,
+            status: "human_response_needed",
+            interrupts: undefined,
+            invalidSchema: undefined,
+          },
+          currentThread
+        );
       }
 
-      // Normal non-interrupted thread
-      return {
-        thread: currentThread,
-        status: currentThread.status,
-        interrupts: undefined,
-        invalidSchema: undefined,
-      };
+      return finalizeThreadData(
+        {
+          thread: currentThread,
+          status: currentThread.status,
+          interrupts: undefined,
+          invalidSchema: undefined,
+        },
+        currentThread
+      );
     },
-    [agentInboxes, getItem, getSearchParam]
+    [agentInboxes, getItem, getSearchParam, toast]
   );
 
   const ignoreThread = async (threadId: string) => {
@@ -449,13 +480,13 @@ export function ThreadsProvider<
             resume: response,
           },
           streamMode: "events",
-        }) as any; // Type assertion needed due to conditional return type
+        }) as any;
       }
       return client.runs.create(threadId, graphId, {
         command: {
           resume: response,
         },
-      }) as any; // Type assertion needed due to conditional return type
+      }) as any;
     } catch (e: any) {
       logger.error("Error sending human response", e);
       throw e;

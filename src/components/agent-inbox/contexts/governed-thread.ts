@@ -77,15 +77,22 @@ export function attachGovernedToThreadData<
   threadData: ThreadData<T>,
   source?: unknown
 ): GovernedThreadData<T> {
+  const existingGoverned = (threadData as GovernedThreadData<T>).governed;
   const governed = extractGovernedThreadMetadata(source ?? threadData);
 
   if (!governed) {
     return threadData as GovernedThreadData<T>;
   }
 
+  if (existingGoverned && existingGoverned === governed) {
+    return threadData as GovernedThreadData<T>;
+  }
+
   const mergedInterrupts = mergeGovernedInterrupts(threadData.interrupts, governed);
   const shouldPromoteToInterrupted =
-    threadData.status !== "interrupted" && !!mergedInterrupts?.length;
+    threadData.status !== "interrupted" &&
+    threadData.status !== "human_response_needed" &&
+    !!mergedInterrupts?.length;
 
   return {
     ...threadData,
